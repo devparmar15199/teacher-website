@@ -1,14 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from 'react-query';
 import { classService } from '../../services/classService';
 import { attendanceService } from '../../services/attendanceService';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import html2canvas from 'html2canvas';
+import {
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from 'recharts';
 
 const ClassReports = () => {
   const { id } = useParams();
   const [selectedPeriod, setSelectedPeriod] = useState('month');
+  const chartRefTrend = useRef(null);
+  const chartRefPie = useRef(null);
+  const chartRefBar = useRef(null);
   const [dateRange, setDateRange] = useState({
     startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
     endDate: new Date().toISOString().split('T')[0] // today
@@ -70,8 +78,8 @@ const ClassReports = () => {
       };
     }
 
-    const students = studentsData?.data || studentsData?.students || [];
-    const attendance = attendanceData?.data?.attendance || attendanceData?.attendance || attendanceData?.data || attendanceData || [];
+    const students = Array.isArray(studentsData) ? studentsData : (studentsData?.data || studentsData?.students || []);
+    const attendance = Array.isArray(attendanceData) ? attendanceData : (attendanceData?.data?.attendance || attendanceData?.attendance || attendanceData?.data || []);
 
     // Ensure attendance is an array
     if (!Array.isArray(attendance)) {
@@ -99,11 +107,23 @@ const ClassReports = () => {
     console.log('Extracted students:', students.length);
     console.log('Extracted attendance records:', attendance.length);
 
-    // Group attendance by date to count total classes
+    // Filter attendance records by selected period date range
+    const startDate = new Date(dateRange.startDate);
+    const endDate = new Date(dateRange.endDate);
+    endDate.setHours(23, 59, 59, 999); // Include entire end day
+
+    const filteredAttendance = attendance.filter(record => {
+      const recordDate = new Date(record.timestamp);
+      return recordDate >= startDate && recordDate <= endDate;
+    });
+
+    console.log('Filtered attendance records for period:', filteredAttendance.length);
+
+    // Group attendance by date to count total classes in the selected period
     const classesByDate = {};
     const studentAttendance = {};
 
-    attendance.forEach(record => {
+    filteredAttendance.forEach(record => {
       const date = new Date(record.timestamp).toDateString();
       const studentId = record.studentId?._id || record.studentId;
       
@@ -128,7 +148,9 @@ const ClassReports = () => {
 
     const totalClasses = Object.keys(classesByDate).length;
     const today = new Date().toDateString();
-    const presentToday = classesByDate[today]?.size || 0;
+    // Only count "present today" if today is within the selected period
+    const isTodayInPeriod = new Date() >= startDate && new Date() <= endDate;
+    const presentToday = (isTodayInPeriod && classesByDate[today]?.size) || 0;
 
     // Calculate student-wise stats
     const studentStats = students.map(student => {
@@ -361,103 +383,201 @@ const ClassReports = () => {
     document.body.removeChild(link);
   };
 
-  // Export to PDF function
-  const exportToPDF = () => {
-    const doc = new jsPDF();
+  // Export to PDF function with charts
+  const exportToPDF = async () => {
+    const doc = new jsPDF('p', 'mm', 'a4');
+    let yPosition = 10;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginLeft = 14;
+    const marginRight = 14;
+    const contentWidth = pageWidth - marginLeft - marginRight;
     
-    // Add title
-    doc.setFontSize(20);
-    doc.text('Attendance Report', 14, 22);
+    // Add school header
+    doc.setFontSize(18);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont(undefined, 'bold');
+    doc.text('CLASS ATTENDANCE REPORT', marginLeft, yPosition);
+    yPosition += 8;
     
-    // Add class information
-    doc.setFontSize(12);
-    doc.text(`Subject: ${classData?.subjectName || 'N/A'}`, 14, 35);
-    doc.text(`Subject Code: ${classData?.subjectCode || 'N/A'}`, 14, 42);
-    doc.text(`Period: ${selectedPeriod.charAt(0).toUpperCase() + selectedPeriod.slice(1)}`, 14, 49);
-    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 56);
-    
-    // Add summary statistics
-    doc.setFontSize(14);
-    doc.text('Summary Statistics', 14, 70);
+    // Add school name and details
     doc.setFontSize(10);
-    doc.text(`Total Classes: ${stats.overall.totalClasses}`, 14, 80);
-    doc.text(`Total Students: ${stats.overall.totalStudents}`, 80, 80);
-    doc.text(`Average Attendance: ${stats.overall.averageAttendance}%`, 14, 87);
-    doc.text(`Present Today: ${stats.overall.presentToday}`, 80, 87);
+    doc.setFont(undefined, 'normal');
+    const schoolName = 'SARVAJANIK COLLEGE OF ENGINEERING & TECHNOLOGY';
+    doc.text(`${schoolName}`, marginLeft, yPosition);
+    yPosition += 6;
+    doc.text(`Class: ${classData?.className || 'N/A'} | Subject: ${classData?.subjectName || 'N/A'}`, marginLeft, yPosition);
+    yPosition += 6;
+    doc.text(`Teacher: ${classData?.teacherName || 'N/A'} | Academic Year: ${new Date().getFullYear()}`, marginLeft, yPosition);
+    yPosition += 10;
+    
+    // Add line separator
+    doc.setDrawColor(0, 0, 0);
+    doc.line(marginLeft, yPosition, pageWidth - marginRight, yPosition);
+    yPosition += 8;
+    
+    // Add date range and summary in a table-like format
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'bold');
+    doc.text('FROM:', marginLeft, yPosition);
+    doc.setFont(undefined, 'normal');
+    doc.text(new Date(dateRange.startDate).toLocaleDateString(), marginLeft + 15, yPosition);
+    
+    doc.setFont(undefined, 'bold');
+    doc.text('TO:', marginLeft + 60, yPosition);
+    doc.setFont(undefined, 'normal');
+    doc.text(new Date(dateRange.endDate).toLocaleDateString(), marginLeft + 75, yPosition);
+    
+    doc.setFont(undefined, 'bold');
+    doc.text('GENERATED:', marginLeft + 130, yPosition);
+    doc.setFont(undefined, 'normal');
+    doc.text(new Date().toLocaleDateString(), marginLeft + 155, yPosition);
+    yPosition += 10;
+    
+    // Add summary statistics in boxes
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'bold');
+    
+    // Box 1: Total Classes
+    doc.setFillColor(200, 220, 255); // Light blue background
+    doc.rect(marginLeft, yPosition, contentWidth / 4 - 1, 18, 'F');
+    doc.setTextColor(0, 0, 0);
+    doc.text('Number of', marginLeft + 8, yPosition + 5);
+    doc.text('Working Days', marginLeft + 8, yPosition + 10);
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text(`${stats.overall.totalClasses}`, marginLeft + 8, yPosition + 16);
+    
+    // Box 2: Attendance Rate
+    doc.setFillColor(200, 220, 255);
+    doc.rect(marginLeft + contentWidth / 4, yPosition, contentWidth / 4 - 1, 18, 'F');
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'bold');
+    doc.text('Attendance', marginLeft + contentWidth / 4 + 8, yPosition + 5);
+    doc.text('Rate', marginLeft + contentWidth / 4 + 8, yPosition + 10);
+    doc.setFontSize(14);
+    doc.text(`${stats.overall.averageAttendance}%`, marginLeft + contentWidth / 4 + 8, yPosition + 16);
+    
+    // Box 3: Total Students
+    doc.setFillColor(200, 220, 255);
+    doc.rect(marginLeft + contentWidth / 2, yPosition, contentWidth / 4 - 1, 18, 'F');
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'bold');
+    doc.text('Number of', marginLeft + contentWidth / 2 + 8, yPosition + 5);
+    doc.text('Students', marginLeft + contentWidth / 2 + 8, yPosition + 10);
+    doc.setFontSize(14);
+    doc.text(`${stats.overall.totalStudents}`, marginLeft + contentWidth / 2 + 8, yPosition + 16);
+    
+    // Box 4: Present Today
+    doc.setFillColor(200, 220, 255);
+    doc.rect(marginLeft + (3 * contentWidth / 4), yPosition, contentWidth / 4 - 1, 18, 'F');
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'bold');
+    doc.text('Minimum', marginLeft + (3 * contentWidth / 4) + 8, yPosition + 5);
+    doc.text('Attendance Required', marginLeft + (3 * contentWidth / 4) + 8, yPosition + 10);
+    doc.setFontSize(14);
+    doc.text(`80%`, marginLeft + (3 * contentWidth / 4) + 8, yPosition + 16);
+    
+    yPosition += 25;
+    
+    // Add Class Attendance Rates table (monthly breakdown)
+    if (stats.trends && stats.trends.length > 0) {
+      doc.setFontSize(11);
+      doc.setFont(undefined, 'bold');
+      doc.text('CLASS ATTENDANCE RATES', marginLeft, yPosition);
+      yPosition += 7;
+      
+      // Prepare monthly data (group by month)
+      const monthlyData = {};
+      stats.trends.forEach(trend => {
+        const date = new Date(trend.date);
+        const monthYear = date.toLocaleString('default', { month: 'long', year: 'numeric' });
+        if (!monthlyData[monthYear]) {
+          monthlyData[monthYear] = { present: 0, total: 0, count: 0 };
+        }
+        monthlyData[monthYear].present += trend.attendance;
+        monthlyData[monthYear].total += 100;
+        monthlyData[monthYear].count += 1;
+      });
+      
+      // Create monthly table
+      const monthlyHeaders = ['Month', ...Object.keys(monthlyData), 'Overall'];
+      const monthlyRows = [
+        ['Number of Working Days', ...Object.values(monthlyData).map(m => m.count), stats.overall.totalClasses],
+        ['Average Attendance Rate', ...Object.values(monthlyData).map(m => `${Math.round(m.present / m.count)}%`), `${stats.overall.averageAttendance}%`]
+      ];
+      
+      autoTable(doc, {
+        head: [monthlyHeaders],
+        body: monthlyRows,
+        startY: yPosition,
+        styles: { fontSize: 8, cellPadding: 3 },
+        headStyles: { fillColor: [52, 152, 219], textColor: 255, fontStyle: 'bold' },
+        bodyStyles: { fillColor: [245, 245, 245] },
+        alternateRowStyles: { fillColor: [255, 255, 255] },
+        columnStyles: {
+          0: { cellWidth: 30, fontStyle: 'bold' }
+        }
+      });
+      
+      yPosition = doc.lastAutoTable.finalY + 10;
+    }
 
-    // Prepare table data - handle empty data case
+    // Add page break if needed
+    if (yPosition > 180) {
+      doc.addPage();
+      yPosition = 10;
+    }
+
+    // Add Student Attendance Rates table
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'bold');
+    doc.text('STUDENT ATTENDANCE RATES', marginLeft, yPosition);
+    yPosition += 7;
+
+    // Prepare table data
     const tableData = stats.students.length > 0 
       ? stats.students.map(student => [
           student.name,
           student.enrollmentNo,
           `${student.attendanceRate}%`,
           `${student.totalPresent}/${student.totalClasses}`,
-          student.lastAttended,
-          student.attendanceRate >= 75 ? 'Good' : 'Poor'
+          student.attendanceRate >= 80 ? 'Good' : student.attendanceRate >= 70 ? 'Satisfactory' : 'Poor'
         ])
-      : [['No attendance data available', '', '', '', '', '']];
+      : [['No attendance data available', '', '', '', '']];
 
     // Add table
     autoTable(doc, {
-      head: [['Student Name', 'Enrollment No', 'Attendance Rate', 'Present/Total', 'Last Attended', 'Status']],
+      head: [['Student Name', 'Enrollment No', 'Attendance Rate', 'Present / Total Days', 'Status']],
       body: tableData,
-      startY: 95,
-      styles: { fontSize: 8 },
-      headStyles: { fillColor: [59, 130, 246] }, // Blue header
-      alternateRowStyles: { fillColor: [249, 250, 251] }, // Light gray alternate rows
+      startY: yPosition,
+      styles: { fontSize: 8, cellPadding: 3 },
+      headStyles: { fillColor: [52, 152, 219], textColor: 255, fontStyle: 'bold' },
+      bodyStyles: { fillColor: [245, 245, 245] },
+      alternateRowStyles: { fillColor: [255, 255, 255] },
       columnStyles: {
-        0: { cellWidth: 40 }, // Student Name
-        1: { cellWidth: 25 }, // Enrollment No
-        2: { cellWidth: 25 }, // Attendance Rate
-        3: { cellWidth: 25 }, // Present/Total
-        4: { cellWidth: 25 }, // Last Attended
-        5: { cellWidth: 20 }  // Status
+        0: { cellWidth: 50 },
+        1: { cellWidth: 30 },
+        2: { cellWidth: 30 },
+        3: { cellWidth: 30 },
+        4: { cellWidth: 25 }
       }
     });
 
-    // Add attendance trend chart data if available
-    if (stats.trends.length > 0 && stats.trends.some(day => day.attendance > 0)) {
-      const finalY = doc.lastAutoTable.finalY + 10;
-      doc.setFontSize(12);
-      doc.text('Attendance Trend (Last 7 Days)', 14, finalY);
-      
-      const trendData = stats.trends.map(day => [
-        formatDate(day.date),
-        `${day.attendance}%`
-      ]);
-
-      autoTable(doc, {
-        head: [['Date', 'Attendance %']],
-        body: trendData,
-        startY: finalY + 5,
-        styles: { fontSize: 9 },
-        headStyles: { fillColor: [34, 197, 94] }, // Green header
-        columnStyles: {
-          0: { cellWidth: 40 },
-          1: { cellWidth: 30 }
-        }
-      });
-    } else if (stats.students.length === 0) {
-      // Add a note about no data
-      const finalY = doc.lastAutoTable.finalY + 10;
-      doc.setFontSize(10);
-      doc.text('Note: No attendance records found for the selected period.', 14, finalY);
-    }
-
     // Save the PDF
-    doc.save(`attendance_report_${classData?.subjectCode || 'class'}_${new Date().toISOString().split('T')[0]}.pdf`);
+    doc.save(`attendance_report_${classData?.className || 'class'}_${new Date().toISOString().split('T')[0]}.pdf`);
   };
 
   if (classLoading || studentsLoading || attendanceLoading) {
     return (
-      <div className="p-6">
+      <div className="p-6 bg-gray-900 min-h-screen dark:bg-gray-900">
         <div className="animate-pulse">
-          <div className="h-8 bg-gray-200 rounded w-1/4 mb-6"></div>
+          <div className="h-8 bg-gray-200 dark:bg-gray-700 rounded w-1/4 mb-6"></div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
             {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="bg-white p-6 rounded-lg shadow">
-                <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
-                <div className="h-8 bg-gray-200 rounded w-1/2"></div>
+              <div key={i} className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-2"></div>
+                <div className="h-8 bg-gray-200 dark:bg-gray-700 rounded w-1/2"></div>
               </div>
             ))}
           </div>
@@ -467,24 +587,24 @@ const ClassReports = () => {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-6 bg-gray-50 dark:bg-gray-900 min-h-screen">
       {/* Breadcrumb */}
       <nav className="flex mb-6" aria-label="Breadcrumb">
         <ol className="inline-flex items-center space-x-1 md:space-x-3">
           <li className="inline-flex items-center">
             <Link 
-              to="/classes" 
-              className="inline-flex items-center text-sm font-medium text-gray-700 hover:text-blue-600"
+              to="/dashboard/classes" 
+              className="inline-flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
             >
               Classes
             </Link>
           </li>
           <li>
             <div className="flex items-center">
-              <span className="text-gray-400 mx-2">/</span>
+              <span className="text-gray-400 dark:text-gray-600 mx-2">/</span>
               <Link
-                to={`/classes/${id}`}
-                className="text-sm font-medium text-gray-700 hover:text-blue-600"
+                to={`/dashboard/classes/${id}`}
+                className="text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
               >
                 {classData?.subjectCode}
               </Link>
@@ -492,8 +612,8 @@ const ClassReports = () => {
           </li>
           <li>
             <div className="flex items-center">
-              <span className="text-gray-400 mx-2">/</span>
-              <span className="text-sm font-medium text-gray-500">Reports</span>
+              <span className="text-gray-400 dark:text-gray-600 mx-2">/</span>
+              <span className="text-sm font-medium text-gray-500 dark:text-gray-400">Reports</span>
             </div>
           </li>
         </ol>
@@ -502,9 +622,9 @@ const ClassReports = () => {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Attendance Reports</h1>
-          <p className="text-gray-600">{classData?.subjectName} - {classData?.subjectCode}</p>
-          <p className="text-sm text-gray-500 mt-1">
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Attendance Reports</h1>
+          <p className="text-gray-600 dark:text-gray-400">{classData?.subjectName} - {classData?.subjectCode}</p>
+          <p className="text-sm text-gray-500 dark:text-gray-500 mt-1">
             Showing data from {new Date(dateRange.startDate).toLocaleDateString()} to {new Date(dateRange.endDate).toLocaleDateString()}
           </p>
         </div>
@@ -517,8 +637,8 @@ const ClassReports = () => {
               onClick={() => handlePeriodChange(period)}
               className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 selectedPeriod === period
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  ? 'bg-blue-600 dark:bg-blue-700 text-white dark:hover:bg-blue-800'
+                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
               }`}
             >
               {period.charAt(0).toUpperCase() + period.slice(1)}
@@ -529,128 +649,230 @@ const ClassReports = () => {
 
       {/* Overview Statistics */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-500 mb-2">Total Classes</h3>
-          <p className="text-3xl font-bold text-gray-900">{stats.overall.totalClasses}</p>
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Total Classes</h3>
+          <p className="text-3xl font-bold text-gray-900 dark:text-white">{stats.overall.totalClasses}</p>
           {stats.overall.totalClasses === 0 && (
-            <p className="text-xs text-gray-400 mt-1">No classes recorded yet</p>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">No classes recorded yet</p>
           )}
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-500 mb-2">Average Attendance</h3>
-          <p className="text-3xl font-bold text-gray-900">{stats.overall.averageAttendance}%</p>
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Average Attendance</h3>
+          <p className="text-3xl font-bold text-gray-900 dark:text-white">{stats.overall.averageAttendance}%</p>
           {stats.overall.totalClasses === 0 && (
-            <p className="text-xs text-gray-400 mt-1">Start taking attendance</p>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Start taking attendance</p>
           )}
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-500 mb-2">Total Students</h3>
-          <p className="text-3xl font-bold text-gray-900">{stats.overall.totalStudents}</p>
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Total Students</h3>
+          <p className="text-3xl font-bold text-gray-900 dark:text-white">{stats.overall.totalStudents}</p>
           {stats.overall.totalStudents === 0 && (
-            <p className="text-xs text-gray-400 mt-1">No students enrolled</p>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">No students enrolled</p>
           )}
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-500 mb-2">Present Today</h3>
-          <p className="text-3xl font-bold text-gray-900">{stats.overall.presentToday}</p>
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Present Today</h3>
+          <p className="text-3xl font-bold text-gray-900 dark:text-white">{stats.overall.presentToday}</p>
           {stats.overall.presentToday === 0 && stats.overall.totalClasses > 0 && (
-            <p className="text-xs text-gray-400 mt-1">No attendance today</p>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">No attendance today</p>
           )}
         </div>
       </div>
 
       {/* Attendance Trend Chart */}
-      <div className="bg-white p-6 rounded-lg shadow mb-8">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 mb-8 dark:border dark:border-gray-700">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
           Attendance Trend 
           {selectedPeriod === 'week' && '(Daily - Last 7 Days)'}
           {selectedPeriod === 'month' && '(Weekly - Last 4 Weeks)'}
           {selectedPeriod === 'semester' && '(Monthly - Last 4 Months)'}
         </h3>
-        {stats.trends.some(day => day.attendance > 0) ? (
-          <div className="flex items-end space-x-2 h-40">
-            {stats.trends.map((trend, index) => (
-              <div key={index} className="flex-1 flex flex-col items-center">
-                <div 
-                  className="bg-blue-500 rounded-t-md w-full transition-all duration-300 hover:bg-blue-600"
-                  style={{ height: `${Math.max(trend.attendance, 5)}%` }}
-                  title={`${trend.attendance}% attendance`}
-                ></div>
-                <div className="text-xs text-gray-500 mt-2">
-                  {trend.label || formatDate(trend.date)}
-                </div>
-                <div className="text-xs font-medium text-gray-700">
-                  {trend.attendance}%
-                </div>
-              </div>
-            ))}
+        {stats.trends && stats.trends.length > 0 ? (
+          <div ref={chartRefTrend} className="w-full h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={stats.trends}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis 
+                  dataKey={selectedPeriod === 'week' ? 'date' : 'label'} 
+                  stroke="#9ca3af"
+                />
+                <YAxis stroke="#9ca3af" />
+                <Tooltip 
+                  contentStyle={{
+                    backgroundColor: '#1f2937',
+                    border: '1px solid #374151',
+                    borderRadius: '8px',
+                    color: '#fff'
+                  }}
+                  formatter={(value) => `${value}%`}
+                />
+                <Legend />
+                <Line 
+                  type="monotone" 
+                  dataKey="attendance" 
+                  stroke="#3b82f6" 
+                  strokeWidth={2}
+                  dot={{ fill: '#3b82f6', r: 5 }}
+                  activeDot={{ r: 7 }}
+                  name="Attendance %"
+                />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center h-40 text-gray-400">
+          <div className="flex flex-col items-center justify-center h-80 text-gray-400 dark:text-gray-600">
             <svg className="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
             </svg>
-            <p className="text-lg font-medium">No attendance data to display</p>
-            <p className="text-sm">Take attendance to see trends here</p>
+            <p className="text-lg font-medium dark:text-gray-300">No attendance data to display</p>
+            <p className="text-sm dark:text-gray-400">Take attendance to see trends here</p>
           </div>
         )}
       </div>
 
+      {/* Charts Row - Pie Chart and Bar Chart */}
+      {stats.students.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          {/* Attendance Distribution Pie Chart */}
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+              Attendance Distribution
+            </h3>
+            <div ref={chartRefPie} className="w-full h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={[
+                      { name: 'Above 85%', value: stats.students.filter(s => s.attendanceRate >= 85).length },
+                      { name: '75-85%', value: stats.students.filter(s => s.attendanceRate >= 75 && s.attendanceRate < 85).length },
+                      { name: 'Below 75%', value: stats.students.filter(s => s.attendanceRate < 75).length }
+                    ]}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={true}
+                    label={({ name, value, percent }) => `${name}: ${value} (${(percent * 100).toFixed(0)}%)`}
+                    outerRadius={120}
+                    fill="#8884d8"
+                    dataKey="value"
+                  >
+                    <Cell fill="#10b981" />
+                    <Cell fill="#f59e0b" />
+                    <Cell fill="#ef4444" />
+                  </Pie>
+                  <Tooltip 
+                    contentStyle={{
+                      backgroundColor: '#1f2937',
+                      border: '1px solid #374151',
+                      borderRadius: '8px',
+                      color: '#fff'
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Top Students Bar Chart */}
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+              Top 10 Students by Attendance
+            </h3>
+            <div ref={chartRefBar} className="w-full h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={stats.students.slice(0, 10).map(s => ({
+                    name: s.name.substring(0, 10),
+                    attendance: s.attendanceRate
+                  }))}
+                  margin={{ top: 20, right: 30, left: 0, bottom: 60 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis 
+                    dataKey="name" 
+                    angle={-45}
+                    textAnchor="end"
+                    height={100}
+                    stroke="#9ca3af"
+                  />
+                  <YAxis stroke="#9ca3af" />
+                  <Tooltip 
+                    contentStyle={{
+                      backgroundColor: '#1f2937',
+                      border: '1px solid #374151',
+                      borderRadius: '8px',
+                      color: '#fff'
+                    }}
+                    formatter={(value) => `${value}%`}
+                  />
+                  <Bar dataKey="attendance" fill="#3b82f6" name="Attendance %" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Student-wise Attendance Table */}
-      <div className="bg-white rounded-lg shadow">
-        <div className="p-6 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">Student Attendance Details</h3>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
+        <div className="p-6 border-b border-gray-200 dark:border-gray-700">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Student Attendance Details</h3>
         </div>
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+            <thead className="bg-gray-50 dark:bg-gray-700/50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   Student
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   Enrollment No
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   Attendance Rate
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   Present/Total
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   Last Attended
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   Status
                 </th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
+            <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
               {stats.students.length > 0 ? (
                 stats.students.map((student) => (
-                  <tr key={student._id} className="hover:bg-gray-50">
+                  <tr key={student._id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="font-medium text-gray-900">{student.name}</div>
+                      <div className="font-medium text-gray-900 dark:text-white">{student.name}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-300">
                       {student.enrollmentNo}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getAttendanceColor(student.attendanceRate)}`}>
+                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                        student.attendanceRate >= 85 
+                          ? 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/30'
+                          : student.attendanceRate >= 75 
+                          ? 'text-yellow-600 dark:text-yellow-400 bg-yellow-100 dark:bg-yellow-900/30'
+                          : 'text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/30'
+                      }`}>
                         {student.attendanceRate}%
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-300">
                       {student.totalPresent}/{student.totalClasses}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-300">
                       {student.lastAttended}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                         student.attendanceRate >= 75 
-                          ? 'text-green-800 bg-green-100'
-                          : 'text-red-800 bg-red-100'
+                          ? 'text-green-800 dark:text-green-400 bg-green-100 dark:bg-green-900/30'
+                          : 'text-red-800 dark:text-red-400 bg-red-100 dark:bg-red-900/30'
                       }`}>
                         {student.attendanceRate >= 75 ? 'Good' : 'Poor'}
                       </span>
@@ -661,11 +883,11 @@ const ClassReports = () => {
                 <tr>
                   <td colSpan="6" className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center">
-                      <svg className="w-12 h-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-12 h-12 text-gray-400 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                       </svg>
-                      <p className="text-gray-500 text-lg font-medium">No attendance data available</p>
-                      <p className="text-gray-400 text-sm mt-1">
+                      <p className="text-gray-500 dark:text-gray-300 text-lg font-medium">No attendance data available</p>
+                      <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
                         Start taking attendance to see student reports here
                       </p>
                     </div>
@@ -681,7 +903,7 @@ const ClassReports = () => {
       <div className="mt-6 flex justify-end space-x-3">
         <button 
           onClick={exportToCSV}
-          className="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors flex items-center space-x-2"
+          className="px-4 py-2 bg-gray-600 dark:bg-gray-700 text-white rounded-md hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors flex items-center space-x-2"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -690,7 +912,7 @@ const ClassReports = () => {
         </button>
         <button 
           onClick={exportToPDF}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center space-x-2"
+          className="px-4 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded-md hover:bg-blue-700 dark:hover:bg-blue-800 transition-colors flex items-center space-x-2"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
