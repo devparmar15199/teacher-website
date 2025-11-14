@@ -14,6 +14,8 @@ import {
 const ClassReports = () => {
   const { id } = useParams();
   const [selectedPeriod, setSelectedPeriod] = useState('month');
+  const [reportMode, setReportMode] = useState('individual'); // 'individual' or 'consolidated'
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const chartRefTrend = useRef(null);
   const chartRefPie = useRef(null);
   const chartRefBar = useRef(null);
@@ -48,7 +50,7 @@ const ClassReports = () => {
     ['classAttendance', id, selectedPeriod, dateRange],
     () => attendanceService.getAttendanceByClass(id, dateRange.startDate, dateRange.endDate),
     {
-      enabled: !!id,
+      enabled: !!id && reportMode === 'individual',
       onSuccess: (data) => {
         console.log('Attendance data received:', data);
         console.log('Date range used:', dateRange);
@@ -58,6 +60,27 @@ const ClassReports = () => {
       }
     }
   );
+
+  // Fetch all classes with same subject code for consolidated report
+  const { data: allClassesData, isLoading: allClassesLoading } = useQuery(
+    ['allClasses'],
+    () => classService.getAllClasses(),
+    { enabled: reportMode === 'consolidated' && !!classData }
+  );
+
+  // Get consolidated attendance data
+  const getConsolidatedAttendanceData = () => {
+    if (!allClassesData || !classData) return [];
+    
+    const sameSubjectClasses = allClassesData.filter(c => 
+      c.subjectCode === classData.subjectCode && 
+      c.classId !== id
+    );
+    
+    // In a real scenario, you'd fetch attendance for all classes
+    // For now, we'll return the structure
+    return sameSubjectClasses;
+  };
 
   // Calculate attendance statistics
   const calculateAttendanceStats = () => {
@@ -288,6 +311,115 @@ const ClassReports = () => {
   console.log('Students data:', studentsData);
   console.log('Attendance data:', attendanceData);
 
+  // Calculate consolidated report data
+  const calculateConsolidatedStats = () => {
+    if (!attendanceData || !classData) {
+      return {
+        byDivision: [],
+        byDate: {},
+        overall: { totalRecords: 0, uniqueDates: [] }
+      };
+    }
+
+    // Handle different response formats
+    let attendance = [];
+    if (Array.isArray(attendanceData)) {
+      attendance = attendanceData;
+    } else if (attendanceData?.data?.attendance && Array.isArray(attendanceData.data.attendance)) {
+      attendance = attendanceData.data.attendance;
+    } else if (attendanceData?.data && Array.isArray(attendanceData.data)) {
+      attendance = attendanceData.data;
+    } else if (attendanceData?.attendance && Array.isArray(attendanceData.attendance)) {
+      attendance = attendanceData.attendance;
+    }
+
+    // Ensure attendance is an array
+    if (!Array.isArray(attendance)) {
+      console.warn('Attendance is not an array:', attendance);
+      return {
+        byDivision: [],
+        byDate: {},
+        overall: { totalRecords: 0, uniqueDates: [] }
+      };
+    }
+
+    const startDate = new Date(dateRange.startDate);
+    const endDate = new Date(dateRange.endDate);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Filter by selected date if in consolidated mode
+    const filteredAttendance = reportMode === 'consolidated' 
+      ? attendance.filter(record => {
+          try {
+            const recordDate = new Date(record.timestamp).toISOString().split('T')[0];
+            return recordDate === selectedDate;
+          } catch (e) {
+            return false;
+          }
+        })
+      : attendance.filter(record => {
+          try {
+            const recordDate = new Date(record.timestamp);
+            return recordDate >= startDate && recordDate <= endDate;
+          } catch (e) {
+            return false;
+          }
+        });
+
+    // Group by division
+    const divisionData = {};
+    const dateData = {};
+    const uniqueDates = new Set();
+
+    filteredAttendance.forEach(record => {
+      try {
+        const division = classData?.division || 'All';
+        const date = new Date(record.timestamp).toISOString().split('T')[0];
+        
+        uniqueDates.add(date);
+
+        if (!divisionData[division]) {
+          divisionData[division] = {
+            division,
+            subject: classData?.subjectName,
+            subjectCode: classData?.subjectCode,
+            totalPresent: 0,
+            totalRecords: 0,
+            attendanceRate: 0
+          };
+        }
+        divisionData[division].totalRecords++;
+        divisionData[division].totalPresent++;
+
+        if (!dateData[date]) {
+          dateData[date] = { date, totalPresent: 0, divisions: {} };
+        }
+        dateData[date].totalPresent++;
+        dateData[date].divisions[division] = (dateData[date].divisions[division] || 0) + 1;
+      } catch (e) {
+        console.error('Error processing record:', e);
+      }
+    });
+
+    // Calculate attendance rates
+    Object.values(divisionData).forEach(div => {
+      if (div.totalRecords > 0) {
+        div.attendanceRate = Math.round((div.totalPresent / div.totalRecords) * 100);
+      }
+    });
+
+    return {
+      byDivision: Object.values(divisionData),
+      byDate: dateData,
+      overall: {
+        totalRecords: filteredAttendance.length,
+        uniqueDates: Array.from(uniqueDates).sort()
+      }
+    };
+  };
+
+  const consolidatedStats = calculateConsolidatedStats();
+
   const getAttendanceColor = (rate) => {
     if (rate >= 85) return 'text-green-600 bg-green-100';
     if (rate >= 75) return 'text-yellow-600 bg-yellow-100';
@@ -385,140 +517,301 @@ const ClassReports = () => {
 
   // Export to PDF function with charts
   const exportToPDF = async () => {
-    const doc = new jsPDF();
-    let yPosition = 22;
+    const doc = new jsPDF('p', 'mm', 'a4');
+    let yPosition = 10;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginLeft = 14;
+    const marginRight = 14;
+    const contentWidth = pageWidth - marginLeft - marginRight;
     
-    // Add title
+    // ========== HEADER SECTION ==========
+    // Add colored header background
+    doc.setFillColor(41, 128, 185); // Professional blue
+    doc.rect(0, 0, pageWidth, 35, 'F');
+    
+    // Add title in header
     doc.setFontSize(20);
-    doc.text('Attendance Report', 14, yPosition);
-    yPosition += 15;
+    doc.setTextColor(255, 255, 255);
+    doc.setFont(undefined, 'bold');
+    doc.text('ATTENDANCE REPORT', marginLeft, 15);
     
-    // Add class information
-    doc.setFontSize(12);
-    doc.text(`Subject: ${classData?.subjectName || 'N/A'}`, 14, yPosition);
-    yPosition += 8;
-    doc.text(`Subject Code: ${classData?.subjectCode || 'N/A'}`, 14, yPosition);
-    yPosition += 8;
-    doc.text(`Period: ${selectedPeriod.charAt(0).toUpperCase() + selectedPeriod.slice(1)}`, 14, yPosition);
-    yPosition += 8;
-    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, yPosition);
-    yPosition += 15;
+    // Add date in header
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Generated: ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`, marginLeft, 25);
     
-    // Add summary statistics
-    doc.setFontSize(14);
-    doc.text('Summary Statistics', 14, yPosition);
-    yPosition += 8;
+    yPosition = 40;
+    
+    // ========== CLASS INFORMATION SECTION ==========
     doc.setFontSize(10);
-    doc.text(`Total Classes: ${stats.overall.totalClasses}`, 14, yPosition);
-    doc.text(`Average Attendance: ${stats.overall.averageAttendance}%`, 100, yPosition);
-    yPosition += 8;
-    doc.text(`Total Students: ${stats.overall.totalStudents}`, 14, yPosition);
-    doc.text(`Present Today: ${stats.overall.presentToday}`, 100, yPosition);
-    yPosition += 15;
-
-    // Capture and add trend chart if available
-    if (stats.trends.some(day => day.attendance > 0) && chartRefTrend.current) {
-      try {
-        const canvas = await html2canvas(chartRefTrend.current, { scale: 2, logging: false });
-        const imgData = canvas.toDataURL('image/png');
-        const imgWidth = 180;
-        const imgHeight = 90;
-        doc.addImage(imgData, 'PNG', 14, yPosition, imgWidth, imgHeight);
-        yPosition += imgHeight + 10;
-      } catch (error) {
-        console.error('Error capturing trend chart:', error);
-      }
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(41, 128, 185);
+    doc.text('CLASS INFORMATION', marginLeft, yPosition);
+    yPosition += 6;
+    
+    // Info box background
+    doc.setFillColor(240, 248, 255); // Alice blue
+    doc.rect(marginLeft, yPosition - 3, contentWidth, 22, 'F');
+    doc.setDrawColor(41, 128, 185);
+    doc.setLineWidth(0.5);
+    doc.rect(marginLeft, yPosition - 3, contentWidth, 22);
+    
+    doc.setFontSize(9);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont(undefined, 'normal');
+    
+    // Get class info from attendance records if available
+    let classNumberInfo = classData?.classNumber || 'N/A';
+    
+    const infoLines = [
+      `Class: ${classNumberInfo}`,
+      `Subject: ${classData?.subjectName || 'N/A'} (${classData?.subjectCode || 'N/A'})`,
+      `Teacher: ${classData?.teacherName || 'N/A'}`
+    ];
+    
+    infoLines.forEach((line, idx) => {
+      doc.text(line, marginLeft + 4, yPosition + 3 + (idx * 6));
+    });
+    
+    yPosition += 28;
+    
+    // ========== PERIOD INFORMATION SECTION ==========
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(41, 128, 185);
+    doc.text('REPORTING PERIOD', marginLeft, yPosition);
+    yPosition += 6;
+    
+    // Period info box
+    doc.setFillColor(240, 248, 255);
+    doc.rect(marginLeft, yPosition - 3, contentWidth, 14, 'F');
+    doc.setLineWidth(0.5);
+    doc.rect(marginLeft, yPosition - 3, contentWidth, 14);
+    
+    doc.setFontSize(9);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont(undefined, 'normal');
+    const periodText = `From: ${new Date(dateRange.startDate).toLocaleDateString()}   •   To: ${new Date(dateRange.endDate).toLocaleDateString()}`;
+    doc.text(periodText, marginLeft + 4, yPosition + 2);
+    
+    yPosition += 18;
+    
+    // ========== KEY STATISTICS SECTION ==========
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(41, 128, 185);
+    doc.text('KEY STATISTICS', marginLeft, yPosition);
+    yPosition += 6;
+    
+    // Stats boxes with better colors
+    const statsBoxHeight = 16;
+    const statsBoxWidth = contentWidth / 2 - 1;
+    const boxColors = [
+      { fill: [76, 175, 80], text: 'Working Days' },        // Green
+      { fill: [33, 150, 243], text: 'Avg. Attendance' },    // Blue
+      { fill: [156, 39, 176], text: 'Total Students' },     // Purple
+      { fill: [255, 152, 0], text: 'Min. Required' }        // Orange
+    ];
+    
+    const statsData = [
+      stats.overall.totalClasses,
+      `${stats.overall.averageAttendance}%`,
+      stats.overall.totalStudents,
+      '80%'
+    ];
+    
+    // Create 2x2 grid of stat boxes
+    for (let i = 0; i < 4; i++) {
+      const row = Math.floor(i / 2);
+      const col = i % 2;
+      const boxX = marginLeft + (col * (statsBoxWidth + 2));
+      const boxY = yPosition + (row * (statsBoxHeight + 2));
+      
+      // Box background
+      doc.setFillColor(...boxColors[i].fill);
+      doc.rect(boxX, boxY, statsBoxWidth, statsBoxHeight, 'F');
+      
+      // Box border
+      doc.setDrawColor(...boxColors[i].fill);
+      doc.setLineWidth(0.5);
+      doc.rect(boxX, boxY, statsBoxWidth, statsBoxHeight);
+      
+      // Text
+      doc.setTextColor(255, 255, 255);
+      doc.setFont(undefined, 'normal');
+      doc.setFontSize(8);
+      doc.text(boxColors[i].text, boxX + 4, boxY + 5);
+      
+      doc.setFont(undefined, 'bold');
+      doc.setFontSize(14);
+      doc.text(statsData[i].toString(), boxX + 4, boxY + 12);
     }
-
-    // Capture and add pie chart if available
-    if (stats.students.length > 0 && chartRefPie.current) {
-      try {
-        // Add page if needed
-        if (yPosition > 200) {
-          doc.addPage();
-          yPosition = 15;
+    
+    yPosition += 40;
+    
+    // ========== SUMMARY TABLE SECTION ==========
+    if (stats.trends && stats.trends.length > 0) {
+      doc.setTextColor(41, 128, 185);
+      doc.setFont(undefined, 'bold');
+      doc.setFontSize(10);
+      doc.text('ATTENDANCE TREND SUMMARY', marginLeft, yPosition);
+      yPosition += 6;
+      
+      // Prepare period data
+      const periodData = {};
+      stats.trends.forEach(trend => {
+        const date = new Date(trend.date);
+        const periodLabel = trend.label || date.toLocaleDateString('default', { month: 'short', day: 'numeric' });
+        periodData[periodLabel] = trend.attendance;
+      });
+      
+      // Create table headers
+      const periodHeaders = Object.keys(periodData).slice(0, 5);
+      const headers = ['Metric', ...periodHeaders, 'Average'];
+      
+      // Create table rows
+      const rows = [
+        [
+          'Attendance %',
+          ...periodHeaders.map(p => `${periodData[p]}%`),
+          `${stats.overall.averageAttendance}%`
+        ]
+      ];
+      
+      autoTable(doc, {
+        head: [headers],
+        body: rows,
+        startY: yPosition,
+        styles: { 
+          fontSize: 8, 
+          cellPadding: 4,
+          halign: 'center',
+          valign: 'middle'
+        },
+        headStyles: { 
+          fillColor: [41, 128, 185], 
+          textColor: 255, 
+          fontStyle: 'bold',
+          halign: 'center'
+        },
+        bodyStyles: { fillColor: [245, 248, 250] },
+        alternateRowStyles: { fillColor: [255, 255, 255] },
+        columnStyles: {
+          0: { halign: 'left', fontStyle: 'bold', fillColor: [230, 240, 250] }
         }
-        
-        doc.setFontSize(12);
-        doc.text('Attendance Distribution', 14, yPosition);
-        yPosition += 8;
-        
-        const canvas = await html2canvas(chartRefPie.current, { scale: 2, logging: false });
-        const imgData = canvas.toDataURL('image/png');
-        const imgWidth = 100;
-        const imgHeight = 100;
-        doc.addImage(imgData, 'PNG', 14, yPosition, imgWidth, imgHeight);
-        yPosition += imgHeight + 10;
-      } catch (error) {
-        console.error('Error capturing pie chart:', error);
-      }
+      });
+      
+      yPosition = doc.lastAutoTable.finalY + 8;
     }
 
-    // Capture and add bar chart if available
-    if (stats.students.length > 0 && chartRefBar.current) {
-      try {
-        // Add page if needed
-        if (yPosition > 200) {
-          doc.addPage();
-          yPosition = 15;
-        }
-        
-        doc.setFontSize(12);
-        doc.text('Top 10 Students by Attendance', 14, yPosition);
-        yPosition += 8;
-        
-        const canvas = await html2canvas(chartRefBar.current, { scale: 2, logging: false });
-        const imgData = canvas.toDataURL('image/png');
-        const imgWidth = 180;
-        const imgHeight = 100;
-        doc.addImage(imgData, 'PNG', 14, yPosition, imgWidth, imgHeight);
-        yPosition += imgHeight + 10;
-      } catch (error) {
-        console.error('Error capturing bar chart:', error);
-      }
-    }
-
-    // Add page for table if needed
-    if (yPosition > 200) {
+    // Add page break if needed
+    if (yPosition > 220) {
       doc.addPage();
-      yPosition = 15;
+      yPosition = 10;
     }
 
-    // Prepare table data
+    // ========== STUDENT ATTENDANCE TABLE ==========
+    doc.setTextColor(41, 128, 185);
+    doc.setFont(undefined, 'bold');
+    doc.setFontSize(10);
+    doc.text('STUDENT ATTENDANCE DETAILS', marginLeft, yPosition);
+    yPosition += 6;
+
+    // Prepare table data with color coding
     const tableData = stats.students.length > 0 
-      ? stats.students.map(student => [
-          student.name,
-          student.enrollmentNo,
-          `${student.attendanceRate}%`,
-          `${student.totalPresent}/${student.totalClasses}`,
-          student.lastAttended,
-          student.attendanceRate >= 75 ? 'Good' : 'Poor'
-        ])
-      : [['No attendance data available', '', '', '', '', '']];
+      ? stats.students.map((student, idx) => {
+          const status = student.attendanceRate >= 80 
+            ? 'Good' 
+            : student.attendanceRate >= 70 
+            ? 'Fair' 
+            : 'Below Target';
+          return [
+            student.name,
+            student.enrollmentNo,
+            `${student.attendanceRate}%`,
+            `${student.totalPresent}/${student.totalClasses}`,
+            status
+          ];
+        })
+      : [['No attendance data available', '', '', '', '']];
+
+    // Color code the status column
+    const getStatusColor = (status) => {
+      switch(status) {
+        case 'Good':
+          return { fillColor: [200, 230, 201], textColor: [0, 0, 0] }; // Light green
+        case 'Fair':
+          return { fillColor: [255, 243, 224], textColor: [0, 0, 0] }; // Light orange
+        case 'Below Target':
+          return { fillColor: [255, 205, 210], textColor: [0, 0, 0] }; // Light red
+        default:
+          return { fillColor: [245, 248, 250], textColor: [0, 0, 0] };
+      }
+    };
 
     // Add table
     autoTable(doc, {
-      head: [['Student Name', 'Enrollment No', 'Attendance Rate', 'Present/Total', 'Last Attended', 'Status']],
+      head: [['Student Name', 'Enrollment No', 'Attendance %', 'Present / Total', 'Status']],
       body: tableData,
       startY: yPosition,
-      styles: { fontSize: 8 },
-      headStyles: { fillColor: [59, 130, 246] }, // Blue header
-      alternateRowStyles: { fillColor: [249, 250, 251] }, // Light gray alternate rows
+      styles: { 
+        fontSize: 8, 
+        cellPadding: 4,
+        valign: 'middle'
+      },
+      headStyles: { 
+        fillColor: [41, 128, 185], 
+        textColor: 255, 
+        fontStyle: 'bold',
+        halign: 'center'
+      },
+      bodyStyles: { fillColor: [245, 248, 250] },
+      alternateRowStyles: { fillColor: [255, 255, 255] },
       columnStyles: {
-        0: { cellWidth: 40 }, // Student Name
-        1: { cellWidth: 25 }, // Enrollment No
-        2: { cellWidth: 25 }, // Attendance Rate
-        3: { cellWidth: 25 }, // Present/Total
-        4: { cellWidth: 25 }, // Last Attended
-        5: { cellWidth: 20 }  // Status
+        0: { cellWidth: 55, halign: 'left' },
+        1: { cellWidth: 30, halign: 'center' },
+        2: { cellWidth: 28, halign: 'center', fontStyle: 'bold' },
+        3: { cellWidth: 32, halign: 'center' },
+        4: { cellWidth: 28, halign: 'center', fontStyle: 'bold' }
+      },
+      didDrawCell: (data) => {
+        // Color code status column
+        if (data.column.index === 4 && data.row.index > 0) {
+          const status = data.row.raw[4];
+          const colors = getStatusColor(status);
+          data.cell.styles.fillColor = colors.fillColor;
+          data.cell.styles.textColor = colors.textColor;
+        }
       }
     });
 
+    // ========== FOOTER SECTION ==========
+    const totalPages = doc.getNumberOfPages();
+    
+    // Get class number from classData
+    const classNumberForFilename = classData?.classNumber || 'class';
+    
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i);
+      
+      // Add footer line
+      doc.setDrawColor(41, 128, 185);
+      doc.setLineWidth(0.5);
+      doc.line(marginLeft, pageHeight - 12, pageWidth - marginRight, pageHeight - 12);
+      
+      // Add footer text
+      doc.setFontSize(8);
+      doc.setTextColor(100, 100, 100);
+      doc.setFont(undefined, 'normal');
+      doc.text(`Page ${i} of ${totalPages}`, marginLeft, pageHeight - 7);
+      doc.text('SARVAJANIK COLLEGE OF ENGINEERING & TECHNOLOGY', pageWidth / 2, pageHeight - 7, { align: 'center' });
+      doc.text(new Date().toLocaleDateString(), pageWidth - marginRight, pageHeight - 7, { align: 'right' });
+    }
+
     // Save the PDF
-    doc.save(`attendance_report_${classData?.subjectCode || 'class'}_${new Date().toISOString().split('T')[0]}.pdf`);
+    doc.save(`attendance_report_${classNumberForFilename}_${new Date().toISOString().split('T')[0]}.pdf`);
   };
 
-  if (classLoading || studentsLoading || attendanceLoading) {
+  if (classLoading || studentsLoading || (attendanceLoading && reportMode === 'individual') || (allClassesLoading && reportMode === 'consolidated')) {
     return (
       <div className="p-6 bg-gray-900 min-h-screen dark:bg-gray-900">
         <div className="animate-pulse">
@@ -537,7 +830,7 @@ const ClassReports = () => {
   }
 
   return (
-    <div className="p-6 bg-gray-900 min-h-screen dark:bg-gray-900">
+    <div className="p-6 bg-gray-50 dark:bg-gray-900 min-h-screen">
       {/* Breadcrumb */}
       <nav className="flex mb-6" aria-label="Breadcrumb">
         <ol className="inline-flex items-center space-x-1 md:space-x-3">
@@ -575,7 +868,10 @@ const ClassReports = () => {
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Attendance Reports</h1>
           <p className="text-gray-600 dark:text-gray-400">{classData?.subjectName} - {classData?.subjectCode}</p>
           <p className="text-sm text-gray-500 dark:text-gray-500 mt-1">
-            Showing data from {new Date(dateRange.startDate).toLocaleDateString()} to {new Date(dateRange.endDate).toLocaleDateString()}
+            {reportMode === 'consolidated' 
+              ? `Consolidated Report for ${classData?.subjectCode} on ${new Date(selectedDate).toLocaleDateString()}`
+              : `Showing data from ${new Date(dateRange.startDate).toLocaleDateString()} to ${new Date(dateRange.endDate).toLocaleDateString()}`
+            }
           </p>
         </div>
         
@@ -597,6 +893,131 @@ const ClassReports = () => {
         </div>
       </div>
 
+      {/* Report Mode Toggle */}
+      <div className="flex space-x-3 mb-6">
+        <button
+          onClick={() => setReportMode('individual')}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center space-x-2 ${
+            reportMode === 'individual'
+              ? 'bg-blue-600 dark:bg-blue-700 text-white'
+              : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+          }`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          <span>Individual Class</span>
+        </button>
+        <button
+          onClick={() => setReportMode('consolidated')}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center space-x-2 ${
+            reportMode === 'consolidated'
+              ? 'bg-purple-600 dark:bg-purple-700 text-white'
+              : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+          }`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 00-2 2m2-2a2 2 0 012 2m-6-10a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2m-6-2v2m0 0h.01" />
+          </svg>
+          <span>Consolidated (By Date & Division)</span>
+        </button>
+      </div>
+
+      {reportMode === 'consolidated' && (
+        <>
+          {/* Consolidated Report Date Selector */}
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700 mb-8">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Select Date for Consolidated Report</label>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="w-full md:w-1/3 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            />
+          </div>
+
+          {/* Consolidated Report Statistics */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900/30 dark:to-purple-800/30 border border-purple-200 dark:border-purple-700 p-6 rounded-lg shadow dark:shadow-black/20">
+              <h3 className="text-sm font-medium text-purple-700 dark:text-purple-300 mb-2">Total Attendance Records</h3>
+              <p className="text-3xl font-bold text-purple-900 dark:text-purple-100">{consolidatedStats.overall.totalRecords}</p>
+              <p className="text-xs text-purple-600 dark:text-purple-400 mt-1">On {new Date(selectedDate).toLocaleDateString()}</p>
+            </div>
+            <div className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 border border-blue-200 dark:border-blue-700 p-6 rounded-lg shadow dark:shadow-black/20">
+              <h3 className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">Subject</h3>
+              <p className="text-2xl font-bold text-blue-900 dark:text-blue-100">{classData?.subjectCode}</p>
+              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">{classData?.subjectName}</p>
+            </div>
+            <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 dark:from-indigo-900/30 dark:to-indigo-800/30 border border-indigo-200 dark:border-indigo-700 p-6 rounded-lg shadow dark:shadow-black/20">
+              <h3 className="text-sm font-medium text-indigo-700 dark:text-indigo-300 mb-2">Division</h3>
+              <p className="text-2xl font-bold text-indigo-900 dark:text-indigo-100">{classData?.division || 'N/A'}</p>
+              <p className="text-xs text-indigo-600 dark:text-indigo-400 mt-1">Class Division</p>
+            </div>
+          </div>
+
+          {/* Division-wise Consolidated Data */}
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700 mb-8">
+            <div className="p-6 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Consolidated Attendance by Division</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">All divisions for {classData?.subjectCode} on {new Date(selectedDate).toLocaleDateString()}</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <thead className="bg-gray-50 dark:bg-gray-700/50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Division</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Subject</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Present</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Records</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Attendance Rate</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                  {consolidatedStats.byDivision.length > 0 ? (
+                    consolidatedStats.byDivision.map((div, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                        <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900 dark:text-white">{div.division}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-gray-900 dark:text-gray-300">{div.subject}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-gray-900 dark:text-gray-300">{div.totalPresent}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-gray-900 dark:text-gray-300">{div.totalRecords}</td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${
+                            div.attendanceRate >= 85 
+                              ? 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/30'
+                              : div.attendanceRate >= 75 
+                              ? 'text-yellow-600 dark:text-yellow-400 bg-yellow-100 dark:bg-yellow-900/30'
+                              : 'text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/30'
+                          }`}>
+                            {div.attendanceRate}%
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="5" className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
+                        No data available for the selected date
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Date Information */}
+          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg p-4 mb-8">
+            <p className="text-sm text-blue-800 dark:text-blue-300">
+              <strong>Available Dates:</strong> {consolidatedStats.overall.uniqueDates.length > 0 
+                ? consolidatedStats.overall.uniqueDates.join(', ') 
+                : 'No attendance data available'}
+            </p>
+          </div>
+        </>
+      )}
+
+      {reportMode === 'individual' && (
+      <>
       {/* Overview Statistics */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow dark:shadow-black/20 dark:border dark:border-gray-700">
@@ -870,6 +1291,8 @@ const ClassReports = () => {
           <span>Export to PDF</span>
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 };

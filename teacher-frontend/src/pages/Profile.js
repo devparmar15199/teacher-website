@@ -178,7 +178,7 @@ const ProfilePage = () => {
               {/* Avatar */}
               <div className="relative">
                 <div className="w-32 h-32 bg-white rounded-full flex items-center justify-center text-4xl font-bold text-indigo-600 shadow-lg">
-                  {getInitials(userProfile?.name)}
+                  {getInitials(userProfile?.fullName)}
                 </div>
                 <div className="absolute -bottom-2 -right-2 bg-green-500 w-8 h-8 rounded-full flex items-center justify-center">
                   <span className="text-white text-xs font-bold">✓</span>
@@ -188,7 +188,7 @@ const ProfilePage = () => {
               {/* Profile Info */}
               <div className="text-center md:text-left">
                 <h2 className="text-3xl font-bold text-white mb-2">
-                  {userProfile?.name || 'Teacher'}
+                  {userProfile?.fullName || 'Teacher'}
                 </h2>
                 <p className="text-blue-100 text-lg mb-2">{userProfile?.email}</p>
                 <div className="flex flex-wrap gap-3 justify-center md:justify-start">
@@ -369,7 +369,7 @@ const ProfilePage = () => {
                         </label>
                         <input
                           type="text"
-                          value={profileData.name}
+                          value={profileData.fullName}
                           onChange={(e) => setProfileData({ ...profileData, name: e.target.value })}
                           className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                           required
@@ -416,7 +416,7 @@ const ProfilePage = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <div>
                         <p className="text-sm text-gray-500 mb-2">Full Name</p>
-                        <p className="text-lg font-medium text-gray-900">{userProfile?.name || 'Not provided'}</p>
+                        <p className="text-lg font-medium text-gray-900">{userProfile?.fullName || 'Not provided'}</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-500 mb-2">Email Address</p>

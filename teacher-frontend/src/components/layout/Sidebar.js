@@ -37,8 +37,8 @@ const Sidebar = () => {
     { name: 'Schedules', icon: CalendarIcon, path: '/admin/schedules' },
     { name: 'Attendance Records', icon: ClipboardDocumentListIcon, path: '/admin/attendance-records' },
     { name: 'Enrollments', icon: ClipboardDocumentListIcon, path: '/admin/enrollments' },
-    { name: 'Settings', icon: CogIcon, path: '/settings' },
-    { name: 'Profile', icon: UserIcon, path: '/profile' },
+    // { name: 'Settings', icon: CogIcon, path: '/settings' },
+    // { name: 'Profile', icon: UserIcon, path: '/profile' },
   ];
 
   const isActive = (path) => {

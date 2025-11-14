@@ -10,15 +10,12 @@ import ClassList from './pages/Classes/ClassList';
 import ClassDetails from './pages/Classes/ClassDetails';
 import ClassStudents from './pages/Classes/ClassStudents';
 import ClassReports from './pages/Classes/ClassReports';
-import NewClassReports from './pages/Classes/NewClassReports';
 import AttendancePage from './pages/Attendance';
 import SchedulePage from './pages/Schedule';
 import SettingsPage from './pages/Settings';
 import ProfilePage from './pages/Profile';
-import LoginPage from './pages/Login';
-import RegisterPage from './pages/Register';
-import NewRegister from './pages/NewRegister';
-import NewLogin from './pages/NewLogin';
+import Register from './pages/Register';
+import Login from './pages/Login';
 
 // Admin Pages
 import AdminDashboard from './pages/Admin/AdminDashboard';
@@ -41,8 +38,8 @@ function App() {
       <AuthProvider>
         <Router>
           <Routes>
-            <Route path="/login" element={<NewLogin />} />
-            <Route path="/register" element={<NewRegister />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
             <Route path="/" element={
               <ProtectedRoute>
                 <Layout />
